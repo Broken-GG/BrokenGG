@@ -1,5 +1,7 @@
 # 🎮 Broken.GG - League of Legends Match History Tracker
 
+[![CI/CD Integration](https://github.com/Broken-GG/BrokenGG/actions/workflows/integration.yml/badge.svg)](https://github.com/Broken-GG/BrokenGG/actions)
+
 A full-stack web application inspired by OP.GG for tracking League of Legends summoner statistics and match history.
 
 ## 📋 Table of Contents
