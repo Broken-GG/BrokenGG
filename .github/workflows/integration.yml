@@ -1,0 +1,137 @@
+name: Integration & Deployment
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build both services
+        run: |
+          docker compose build
+      
+      - name: Start services
+        run: |
+          docker compose up -d
+      
+      - name: Wait for services to be healthy
+        run: |
+          echo "Waiting for Backend to be ready..."
+          timeout 60 bash -c 'until curl -f http://localhost:5000/api/health; do sleep 2; done'
+          echo "✅ Backend is healthy!"
+          
+          echo "Waiting for Frontend to be ready..."
+          timeout 60 bash -c 'until curl -f http://localhost; do sleep 2; done'
+          echo "✅ Frontend is healthy!"
+      
+      - name: Run integration tests
+        run: |
+          # Test Backend API
+          curl -f http://localhost:5000/api/health || exit 1
+          echo "✅ Backend API responding"
+          
+          # Test Frontend
+          curl -f http://localhost || exit 1
+          echo "✅ Frontend responding"
+          
+          # Add more integration tests here
+          # Example: Test that Frontend can call Backend
+          # curl -f http://localhost:5000/api/summoner/test
+      
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          docker compose logs
+      
+      - name: Stop services
+        if: always()
+        run: |
+          docker compose down -v
+
+  docker-compose-validate:
+    name: Validate Docker Compose
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Validate docker-compose.yml
+        run: |
+          docker compose config
+
+  security-scan:
+    name: Security Scan (Full Stack)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Optional: Deploy to production
+  deploy:
+    name: Deploy to Production
+    needs: [integration-test, docker-compose-validate, security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Deploy notification
+        run: |
+          echo "🚀 Ready to deploy to production!"
+          echo "Add your deployment steps here:"
+          echo "  - Push to Docker registry"
+          echo "  - Deploy to cloud (Azure, AWS, etc.)"
+          echo "  - Update Kubernetes manifests"
+          echo "  - Run smoke tests"
+      
+      # Example: Push to Docker Hub
+      # - name: Login to Docker Hub
+      #   uses: docker/login-action@v3
+      #   with:
+      #     username: ${{ secrets.DOCKERHUB_USERNAME }}
+      #     password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      # - name: Build and push
+      #   run: |
+      #     docker compose build
+      #     docker compose push
