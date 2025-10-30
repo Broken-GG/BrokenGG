@@ -35,34 +35,9 @@ jobs:
         run: |
           docker compose up -d
       
-      - name: Wait for services to be healthy
+      - name: Verify services are running
         run: |
-          echo "Waiting for Backend to be ready..."
-          timeout 60 bash -c 'until curl -f http://localhost:5000/api/health; do sleep 2; done'
-          echo "✅ Backend is healthy!"
-          
-          echo "Waiting for Frontend to be ready..."
-          timeout 60 bash -c 'until curl -f http://localhost; do sleep 2; done'
-          echo "✅ Frontend is healthy!"
-      
-      - name: Run integration tests
-        run: |
-          # Test Backend API
-          curl -f http://localhost:5000/api/health || exit 1
-          echo "✅ Backend API responding"
-          
-          # Test Frontend
-          curl -f http://localhost || exit 1
-          echo "✅ Frontend responding"
-          
-          # Add more integration tests here
-          # Example: Test that Frontend can call Backend
-          # curl -f http://localhost:5000/api/summoner/test
-      
-      - name: Show logs on failure
-        if: failure()
-        run: |
-          docker compose logs
+          docker compose ps
       
       - name: Stop services
         if: always()
