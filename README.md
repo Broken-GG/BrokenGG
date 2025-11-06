@@ -44,6 +44,10 @@ A full-stack web application inspired by OP.GG for tracking League of Legends su
 - **Docker Compose** - Multi-container orchestration
 - **GitHub Actions** - CI/CD (coming soon)
 
+### Dev branch
+- **Branch Rule** - New branch protection
+- **Better CI/CD** - Cannot merge if CI/CD fails 
+
 ## 📁 Project Structure
 
 ```

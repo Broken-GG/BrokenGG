@@ -87,7 +87,7 @@ jobs:
     name: Deploy to Production
     needs: [integration-test, docker-compose-validate, security-scan]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' || github.event_name == 'pull_request'
     
     steps:
       - name: Checkout repository with submodules
