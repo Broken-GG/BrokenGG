@@ -82,9 +82,14 @@ jobs:
           echo "✅ Frontend is serving content"
           
           echo "🧪 Testing Backend API endpoints..."
-          # Test that backend responds with proper headers
-          curl -I http://localhost:5000/api/health | grep -E "HTTP/[0-9.]+ 200" || exit 1
-          echo "✅ Backend API is accessible"
+          # Test that backend responds with HTTP 200
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/api/health)
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Backend API is accessible (HTTP $HTTP_CODE)"
+          else
+            echo "❌ Backend API returned HTTP $HTTP_CODE"
+            exit 1
+          fi
       
       - name: Check container logs
         if: failure()
