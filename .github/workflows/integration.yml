@@ -2,7 +2,7 @@ name: Integration & Deployment
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:  # Allow manual triggers
@@ -11,6 +11,10 @@ permissions:
   actions: read
   contents: read
   security-events: write
+
+env:
+  DOCKER_BUILDKIT: 1
+  COMPOSE_DOCKER_CLI_BUILD: 1
 
 jobs:
   integration-test:
@@ -26,18 +30,74 @@ jobs:
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+      
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
       
       - name: Build both services
         run: |
-          docker compose build
+          docker compose build --progress=plain
+        env:
+          DOCKER_BUILDKIT: 1
+          COMPOSE_DOCKER_CLI_BUILD: 1
       
       - name: Start services
         run: |
           docker compose up -d
+        env:
+          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
       
-      - name: Verify services are running
+      - name: Wait for services to be ready
         run: |
-          docker compose ps
+          echo "Waiting for backend to be ready..."
+          timeout 60 bash -c 'until curl -sf http://localhost:5000/api/health; do sleep 2; done'
+          echo "✅ Backend is ready"
+          
+          echo "Waiting for frontend to be ready..."
+          timeout 30 bash -c 'until curl -sf http://localhost:80; do sleep 2; done'
+          echo "✅ Frontend is ready"
+      
+      - name: Run integration tests
+        run: |
+          echo "🧪 Testing Backend Health Endpoint..."
+          HEALTH_RESPONSE=$(curl -s http://localhost:5000/api/health)
+          echo "Response: $HEALTH_RESPONSE"
+          
+          if [[ $HEALTH_RESPONSE == *"Healthy"* ]] || [[ $HEALTH_RESPONSE == *"healthy"* ]]; then
+            echo "✅ Backend health check passed"
+          else
+            echo "❌ Backend health check failed"
+            exit 1
+          fi
+          
+          echo "🧪 Testing Frontend serving..."
+          curl -f http://localhost:80 || exit 1
+          echo "✅ Frontend is serving content"
+          
+          echo "🧪 Testing Backend API endpoints..."
+          # Test that backend responds with HTTP 200
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/api/health)
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Backend API is accessible (HTTP $HTTP_CODE)"
+          else
+            echo "❌ Backend API returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+      
+      - name: Check container logs
+        if: failure()
+        run: |
+          echo "=== Backend Logs ==="
+          docker compose logs backend
+          echo "=== Frontend Logs ==="
+          docker compose logs frontend
       
       - name: Stop services
         if: always()
@@ -82,30 +142,151 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
-  # Optional: Deploy to production
-  deploy:
-    name: Deploy to Production
-    needs: [integration-test, docker-compose-validate, security-scan]
+  # Build and save Docker images as artifacts
+  build-artifacts:
+    name: Build & Save Artifacts
+    needs: [integration-test, docker-compose-validate]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' || github.event_name == 'pull_request'
+    if: github.event_name == 'push'
     
     steps:
       - name: Checkout repository with submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          token: ${{ secrets.TOKEN }}
       
-      - name: Deploy notification
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+      
+      - name: Build Docker images
         run: |
-          echo "🚀 Ready to deploy to production!"
-          echo "Add your deployment steps here:"
-          echo "  - Push to Docker registry"
-          echo "  - Deploy to cloud (Azure, AWS, etc.)"
-          echo "  - Update Kubernetes manifests"
-          echo "  - Run smoke tests"
-env:
-  RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
-  RIOT_API_URL: ${{ secrets.RIOT_API_URL }}
-  RIOT_SUMMONER_URL: ${{ secrets.RIOT_SUMMONER_URL }}
-  ASPNETCORE_ENVIRONMENT: ${{ secrets.ASPNETCORE_ENVIRONMENT }}
-  ASPNETCORE_URLS: ${{ secrets.ASPNETCORE_URLS }}
+          docker compose build
+      
+      - name: Tag images with version
+        run: |
+          docker tag brokengg-backend:latest brokengg-backend:${{ github.sha }}
+          docker tag brokengg-frontend:latest brokengg-frontend:${{ github.sha }}
+      
+      - name: Save Docker images
+        run: |
+          docker save brokengg-backend:${{ github.sha }} | gzip > backend-image.tar.gz
+          docker save brokengg-frontend:${{ github.sha }} | gzip > frontend-image.tar.gz
+      
+      - name: Upload Backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-docker-image
+          path: backend-image.tar.gz
+          retention-days: 7
+      
+      - name: Upload Frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-docker-image
+          path: frontend-image.tar.gz
+          retention-days: 7
+
+  # Deploy to production
+  deploy:
+    name: Deploy to Production
+    needs: [integration-test, docker-compose-validate, security-scan, build-artifacts]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://your-domain.com  # Update with your actual domain
+    
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.TOKEN }}
+      
+      - name: Download Backend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-docker-image
+      
+      - name: Download Frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-docker-image
+      
+      - name: Load Docker images
+        run: |
+          docker load < backend-image.tar.gz
+          docker load < frontend-image.tar.gz
+      
+      - name: Tag images for deployment
+        run: |
+          docker tag brokengg-backend:${{ github.sha }} brokengg-backend:production
+          docker tag brokengg-frontend:${{ github.sha }} brokengg-frontend:production
+      
+      # Deploy using artifact images (no registry needed)
+      - name: Deploy to production server
+        run: |
+          echo "🚀 Deploying to production..."
+          echo "Images are ready for deployment:"
+          echo "  - brokengg-backend:production"
+          echo "  - brokengg-frontend:production"
+          echo ""
+          echo "✅ Images saved as artifacts - download from GitHub Actions"
+          echo ""
+          echo "To deploy these images to your server:"
+          echo "  1. Download artifacts from this workflow run"
+          echo "  2. Transfer to your server (scp, sftp, etc.)"
+          echo "  3. Load images: docker load < backend-image.tar.gz"
+          echo "  4. Load images: docker load < frontend-image.tar.gz"
+          echo "  5. Run: docker compose up -d"
+          echo ""
+          echo "💡 No Docker registry required!"
+      
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Images Built" >> $GITHUB_STEP_SUMMARY
+          echo "- Backend: \`brokengg-backend:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Frontend: \`brokengg-frontend:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+  
+  # Deployment notification
+  notify:
+    name: Notify Deployment Status
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Deployment Status
+        run: |
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+            exit 1
+          fi
+      
+      # Add notification integrations here (Slack, Discord, Email, etc.)
+      # Example: Slack notification
+      # - name: Slack Notification
+      #   uses: 8398a7/action-slack@v3
+      #   if: always()
+      #   with:
+      #     status: ${{ needs.deploy.result }}
+      #     text: 'Deployment to production ${{ needs.deploy.result }}'
+      #     webhook_url: ${{ secrets.SLACK_WEBHOOK }}
